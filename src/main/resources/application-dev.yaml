@@ -1,0 +1,33 @@
+# Local development profile.
+# Datasource and Kafka are provisioned automatically by Spring Boot Docker Compose.
+spring:
+  docker:
+    compose:
+      # Path is relative to the process working directory (the project root).
+      # Override to run against a different stack: DOCKER_COMPOSE_FILE=...
+      file: ${DOCKER_COMPOSE_FILE:src/main/docker/cd/dev/docker-compose.yaml}
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/mydatabase}
+    username: ${DB_USERNAME:myuser}
+    password: ${DB_PASSWORD:secret}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.huylq: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.springframework.web: DEBUG

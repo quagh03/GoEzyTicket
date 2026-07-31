@@ -1,0 +1,30 @@
+# Test profile — used by the automated test suite.
+# Assumes Testcontainers (or an ephemeral local DB/broker) provides the datasource
+# and Kafka broker; schema is created fresh and dropped per run.
+spring:
+  docker:
+    compose:
+      enabled: false
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/testdb}
+    username: ${DB_USERNAME:test}
+    password: ${DB_PASSWORD:test}
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      auto-offset-reset: earliest
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    com.huylq: DEBUG
+    org.springframework.modulith: DEBUG
