@@ -9,11 +9,11 @@ spring:
       lifecycle-management: start_only
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/goezyticket}
-    username: ${DB_USERNAME:myuser}
-    password: ${DB_PASSWORD:secret}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: validate
     show-sql: true
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
