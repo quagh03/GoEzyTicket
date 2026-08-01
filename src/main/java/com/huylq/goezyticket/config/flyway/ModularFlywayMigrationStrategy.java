@@ -12,11 +12,11 @@ import javax.sql.DataSource;
 @RequiredArgsConstructor
 public class ModularFlywayMigrationStrategy implements FlywayMigrationStrategy {
 
-  public final ModuleMigrationProperties properties;
+  private final ModuleMigrationProperties properties;
 
   @Override
   public void migrate(Flyway autoConfigured) {
-    long startedAt = System.currentTimeMillis();
+    long startedAt = System.nanoTime();
     log.info("Started flyway migration");
 
     if (properties.modules().isEmpty()) {
@@ -40,7 +40,7 @@ public class ModularFlywayMigrationStrategy implements FlywayMigrationStrategy {
       migrateInto(dataSource, module, module);
     }
 
-    log.info("Flyway migration took: {} ms", System.currentTimeMillis() - startedAt);
+    log.info("Flyway migration took: {} ms", System.nanoTime() - startedAt);
 
   }
 
