@@ -11,7 +11,11 @@ spring:
     password: ${DB_PASSWORD:test}
   jpa:
     hibernate:
-      ddl-auto: create-drop
+      # Flyway owns the schema, so Hibernate must not touch it. create-drop would fight the
+      # migrations and, across a shared Testcontainers instance, drop tables Flyway still has
+      # recorded as applied. validate also means tests fail loudly when a migration drifts from
+      # the entity mapping.
+      ddl-auto: validate
     show-sql: false
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
