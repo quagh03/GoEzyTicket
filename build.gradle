@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'jacoco'
     id 'org.springframework.boot' version '4.0.7'
     id 'io.spring.dependency-management' version '1.1.7'
 }
@@ -46,6 +47,9 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
     testImplementation 'org.springframework.modulith:spring-modulith-starter-test'
     testImplementation 'org.springframework.boot:spring-boot-starter-flyway-test'
+    // Real Postgres in tests, never H2: H2's locking semantics differ, and locking is the topic.
+    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+    testImplementation 'org.testcontainers:testcontainers-postgresql'
     testCompileOnly 'org.projectlombok:lombok'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     testAnnotationProcessor 'org.projectlombok:lombok'
@@ -59,4 +63,57 @@ dependencyManagement {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // `./gradlew test` alone leaves a stale report; always regenerate.
+    finalizedBy tasks.named('jacocoTestReport')
+}
+
+jacoco {
+    // Must understand Java 25 class files; older versions fail with "Unsupported class file major version".
+    toolVersion = '0.8.14'
+}
+
+tasks.named('jacocoTestReport') {
+    dependsOn tasks.named('test')
+    reports {
+        html.required = true   // build/reports/jacoco/test/html/index.html
+        xml.required = true    // build/reports/jacoco/test/jacocoTestReport.xml - for CI and IDEs
+        csv.required = false
+    }
+    classDirectories.setFrom(
+            files(classDirectories.files.collect {
+                fileTree(dir: it, exclude: [
+                        // Declarations with no behaviour to exercise. Leaving them in reports a
+                        // coverage number that moves when you add documentation.
+                        '**/package-info.class',
+                        '**/*Application.class',
+                ])
+            })
+    )
+}
+
+tasks.register('coverage') {
+    group = 'verification'
+    description = 'Runs the tests and prints the coverage summary to the console.'
+    dependsOn tasks.named('jacocoTestReport')
+
+    def reportFile = layout.buildDirectory.file('reports/jacoco/test/jacocoTestReport.xml')
+    def htmlFile = layout.buildDirectory.file('reports/jacoco/test/html/index.html')
+
+    doLast {
+        def parser = new groovy.xml.XmlParser()
+        // The JaCoCo report declares a DOCTYPE; without this the parser tries to fetch the DTD.
+        parser.setFeature('http://apache.org/xml/features/disallow-doctype-decl', false)
+        parser.setFeature('http://apache.org/xml/features/nonvalidating/load-external-dtd', false)
+        def root = parser.parse(reportFile.get().asFile)
+
+        println "\nCoverage"
+        root.counter.each { c ->
+            int missed = c.'@missed' as int
+            int covered = c.'@covered' as int
+            int total = missed + covered
+            def percent = total ? 100.0d * covered / total : 0.0d
+            printf("  %-12s %5d/%-5d %6.1f%%%n", c.'@type', covered, total, percent)
+        }
+        println "\n  HTML: ${htmlFile.get().asFile}\n"
+    }
 }
