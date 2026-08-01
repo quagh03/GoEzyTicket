@@ -116,26 +116,92 @@ flowchart TB
 | `payment` | Mock PSP, idempotent charge, webhook | `PaymentService.authorize/capture` | `PaymentCaptured`, `PaymentFailed` |
 | `ticketing` | Issue tickets, QR payload, check-in | `TicketService.issue` | `TicketIssued` |
 | `notification` | Email/SMS mock, retry, DLQ | (subscriber only) | — |
-| `shared` | `Money`, typed IDs, `DomainEvent` | ≤ 15 classes | — |
+
+**Three non-business modules** (detailed in §2.5):
+
+| Module | Role | Contents | Constraint |
+|---|---|---|---|
+| `shared` | Domain kernel | `Money`, `OrderId`, `ShowId`, `DomainEvent` | Plain Java, **no Spring**, ≤ 15 classes |
+| `platform` | Technical common | `ApiResponse`, `ErrorResponse`, `GlobalExceptionHandler`, correlation-ID filter, Jackson/OpenAPI config | **Imports no business module** |
+| `app` | Composition root | `@SpringBootApplication`, DataSource, top-level security chain, `application.yml` | Neither extractable nor shareable |
 
 ### 2.4 Package layout
 
 ```
 src/main/java/com/thesis/ticketing/
+├── TicketingApplication.java      # app: composition root
+├── config/                        # app: DataSource, Flyway, top-level security chain, scheduler
+├── platform/                      # technical common — OPEN module
+│   ├── web/       ApiResponse, ErrorResponse, PageResponse, GlobalExceptionHandler
+│   ├── error/     DomainException, NotFoundException, ConflictException
+│   ├── tracing/   CorrelationIdFilter, MDC
+│   └── config/    JacksonConfig, OpenApiConfig, CorsConfig
+├── shared/                        # domain kernel — no Spring
 ├── identity/
 │   ├── api/          # PUBLIC — the only package other modules may import
 │   ├── domain/       # package-private
-│   └── infra/        # package-private (JPA, controllers)
+│   └── infra/        # package-private (JPA, controllers, module-local config)
 ├── catalog/{api,domain,infra}
 ├── inventory/{api,domain,infra}
 ├── ordering/{api,domain,infra}
 ├── payment/{api,domain,infra}
 ├── ticketing/{api,domain,infra}
-├── notification/{api,domain,infra}
-└── shared/           # Money, EventId, ShowId, DomainEvent
+└── notification/{api,domain,infra}
 ```
 
-### 2.5 Hard database rules
+### 2.5 Three kinds of "common" — where each belongs
+
+The only classification question: *"When services get extracted in semester 2, will this be **copied into every service** (→ `platform`), **travel with one module** (→ that module), or **rewritten per service** (→ `app`)?"*
+
+**Dependency direction is one-way:**
+
+```
+business module → platform → (nothing)
+business module → shared   → (nothing)
+app            → everything
+```
+
+Write the ArchUnit rule blocking the reverse direction in Phase 0 — it will be violated the first time you're in a hurry.
+
+**Envelope in `platform`, payload in the module:**
+
+```java
+// platform/web — knows the shape, knows nothing about the domain
+public record ApiResponse<T>(T data, ErrorBody error, Meta meta) { }
+
+// ordering/infra — the controller combines the two
+public ApiResponse<OrderDto> place(...) { ... }   // OrderDto belongs to ordering.api
+```
+
+**Config splits three ways:**
+
+| Kind | Examples | Location |
+|---|---|---|
+| Technical, cross-cutting | ObjectMapper, OpenAPI, CORS, OTel exporter, Redis connection factory | `platform/config` |
+| Module-local | `inventory.hold.ttl`, Lua script bean, the module's `@ConfigurationProperties`, its own `SecurityFilterChain` | `<module>/infra/config` |
+| Assembly | DataSource, Flyway locations, `@EnableScheduling`, top-level security chain | `app/config` |
+
+Redis example: the shared connection factory goes in `platform`; the seat-hold Lua script, key serializer, and TTL go in `inventory/infra/config`. When `inventory` is extracted, its Redis specifics travel with it and the generic part stays in the starter JAR.
+
+Security example: the JWT **validation** filter goes in `platform`; token **issuance** and user lookup belong to `identity`; each module declares its own `SecurityFilterChain` with an `@Order` rather than centralizing every rule in one file.
+
+**Spring Modulith configuration** — `platform` and `shared` must be open modules, otherwise Modulith flags every access to their internals:
+
+```java
+// platform/package-info.java  (same for shared/package-info.java)
+@org.springframework.modulith.ApplicationModule(
+    type = ApplicationModule.Type.OPEN
+)
+package com.thesis.ticketing.platform;
+```
+
+**Three traps:**
+
+1. **A central `ErrorCode` enum** in `platform` listing every module's errors — now adding a business error means editing platform, which is coupling in disguise. Platform defines only the shape (`code` as a `String`, or an `ErrorCode` interface); each module declares its own enum.
+2. **Putting business entities or services in `shared/`** because "two modules need it" — either the boundary is cut wrong, or one side should call the other's `api`.
+3. **`platform` bloating into "utils"** — the appearance of `StringUtils` or `DateUtils` signals it's becoming a dumping ground. Platform holds only what concerns the technical contract between modules and the outside world.
+
+### 2.6 Hard database rules
 
 | Rule | Why |
 |---|---|
@@ -250,10 +316,11 @@ Each phase has: **learn → build → measure → done when**. Don't start a new
 **Learn**: Spring Modulith, ArchUnit, Testcontainers, multi-schema Flyway, Docker Compose.
 
 **Build**:
-- Bootstrap the project with 7 empty modules in the correct `api/domain/infra` shape.
+- Bootstrap the project: 7 empty business modules in the correct `api/domain/infra` shape, plus `platform/`, `shared/`, and `app/`.
+- Mark `platform` and `shared` as OPEN modules; add the ArchUnit rule forbidding `platform`/`shared` from importing any business module.
 - `ApplicationModules.of(App.class).verify()` running in CI.
 - `docker-compose.yml`: Postgres, Redis, Prometheus, Grafana, Jaeger.
-- Flyway creating all 7 schemas.
+- Flyway creating all 7 schemas (one per business module; `platform`/`shared`/`app` own none).
 - GitHub Actions: build + test + architecture verification.
 - One working `/actuator/health` endpoint.
 
@@ -302,20 +369,20 @@ FAILED                  EXPIRED                     REFUNDED
 ```java
 @Test
 void only_one_booking_wins_the_seat() throws Exception {
-    var latch = new CountDownLatch(1);
-    var success = new AtomicInteger();
-    var pool = Executors.newVirtualThreadPerTaskExecutor();
-    for (int i = 0; i < 200; i++) {
-        pool.submit(() -> {
-            latch.await();
-            try { orderService.place(cmd(seatId)); success.incrementAndGet(); }
-            catch (SeatUnavailableException ignored) {}
-            return null;
-        });
-    }
-    latch.countDown();
-    pool.close();
-    assertThat(success.get()).isEqualTo(1);   // hard constraint
+  var latch = new CountDownLatch(1);
+  var success = new AtomicInteger();
+  var pool = Executors.newVirtualThreadPerTaskExecutor();
+  for (int i = 0; i < 200; i++) {
+    pool.submit(() -> {
+      latch.await();
+      try { orderService.place(cmd(seatId)); success.incrementAndGet(); }
+      catch (SeatUnavailableException ignored) {}
+      return null;
+    });
+  }
+  latch.countDown();
+  pool.close();
+  assertThat(success.get()).isEqualTo(1);   // hard constraint
 }
 ```
 
