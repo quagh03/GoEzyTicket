@@ -11,6 +11,12 @@ spring:
         format_sql: true
         jdbc:
           time_zone: UTC
+  flyway:
+    # Stays enabled, but the autoconfigured instance is never migrated: ModularFlywayMigrationStrategy
+    # replaces its migrate() with one Flyway run per module. Boot's FlywayMigrationInitializer is
+    # kept in the loop because it is what makes JPA wait for migrations to finish.
+    # Configure the real thing under `goezyticket.migration` below.
+    enabled: true
   kafka:
     consumer:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
@@ -20,6 +26,21 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+goezyticket:
+  migration:
+    # One schema per business module; platform/shared/app hold no state and own none.
+    # Each module gets its own Flyway instance, so each numbers its migrations from V1
+    # independently — the history tables never collide because each lives inside its own schema.
+    # Order matters only in that it is the order the schemas are created in.
+    modules:
+      - identity
+      - catalog
+      - inventory
+      - ordering
+      - payment
+      - ticketing
+      - notification
 
 springdoc:
   swagger-ui:
