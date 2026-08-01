@@ -6,8 +6,9 @@ spring:
       # Path is relative to the process working directory (the project root).
       # Override to run against a different stack: DOCKER_COMPOSE_FILE=...
       file: ${DOCKER_COMPOSE_FILE:src/main/docker/cd/dev/docker-compose.yaml}
+      lifecycle-management: start_only
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/mydatabase}
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/goezyticket}
     username: ${DB_USERNAME:myuser}
     password: ${DB_PASSWORD:secret}
   jpa:
