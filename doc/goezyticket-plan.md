@@ -190,7 +190,7 @@ Security example: the JWT **validation** filter goes in `platform`; token **issu
 ```java
 // platform/package-info.java  (same for shared/package-info.java)
 @org.springframework.modulith.ApplicationModule(
-    type = ApplicationModule.Type.OPEN
+        type = ApplicationModule.Type.OPEN
 )
 package com.thesis.ticketing.platform;
 ```
@@ -224,7 +224,7 @@ This is the **heart of the thesis**. You will implement and measure **four strat
 ```sql
 SELECT * FROM inventory.seat
 WHERE id = ANY(:seatIds) AND status = 'AVAILABLE'
-FOR UPDATE;
+  FOR UPDATE;
 ```
 
 - **What you learn**: Postgres locking, lock waits, deadlocks, why lock ordering matters.
@@ -247,7 +247,7 @@ FOR UPDATE;
 UPDATE inventory.tier_stock
 SET available = available - :qty
 WHERE tier_id = :tierId AND available >= :qty
-RETURNING available;
+  RETURNING available;
 ```
 
 - **What you learn**: single-statement atomicity, why read-then-write is always wrong, row-level contention.
@@ -300,14 +300,18 @@ This table is the **central results table** of the thesis. Fill it completely.
 | Metrics | Micrometer + Prometheus + Grafana | Live p95/p99 | Initial setup |
 | Tracing | OpenTelemetry + Jaeger/Tempo | See exactly where time goes | Small overhead |
 | Profiling | async-profiler + JFR | Flame graphs, real hotspots | Learning to read them |
+| Microbenchmarking | JMH | Accurate nano/micro measurement instead of self-deception | Easy to misuse without understanding warmup/dead-code elimination |
+| Concurrency testing | jcstress | Catches real JMM races that ordinary tests miss | Slow; reserve it for hand-written structures |
 
 **Deliberately NOT used at this stage**: Kafka (semester 2), Kubernetes (unnecessary), service mesh (unnecessary), GraphQL (solves none of the problems here).
 
 ---
 
-## 5. Build roadmap — 8 phases
+## 5. Build roadmap — 9 phases (17 weeks)
 
 Each phase has: **learn → build → measure → done when**. Don't start a new phase until the previous one has numbers.
+
+> The plan runs 17 weeks rather than 16 because of Phase 5.5. If time gets tight, trim Phase 5.5 to C1/C7/C9 plus the virtual-thread experiment — don't cut Phase 3 or Phase 4.
 
 ---
 
@@ -369,20 +373,20 @@ FAILED                  EXPIRED                     REFUNDED
 ```java
 @Test
 void only_one_booking_wins_the_seat() throws Exception {
-  var latch = new CountDownLatch(1);
-  var success = new AtomicInteger();
-  var pool = Executors.newVirtualThreadPerTaskExecutor();
-  for (int i = 0; i < 200; i++) {
-    pool.submit(() -> {
-      latch.await();
-      try { orderService.place(cmd(seatId)); success.incrementAndGet(); }
-      catch (SeatUnavailableException ignored) {}
-      return null;
-    });
-  }
-  latch.countDown();
-  pool.close();
-  assertThat(success.get()).isEqualTo(1);   // hard constraint
+    var latch = new CountDownLatch(1);
+    var success = new AtomicInteger();
+    var pool = Executors.newVirtualThreadPerTaskExecutor();
+    for (int i = 0; i < 200; i++) {
+        pool.submit(() -> {
+            latch.await();
+            try { orderService.place(cmd(seatId)); success.incrementAndGet(); }
+            catch (SeatUnavailableException ignored) {}
+            return null;
+        });
+    }
+    latch.countDown();
+    pool.close();
+    assertThat(success.get()).isEqualTo(1);   // hard constraint
 }
 ```
 
@@ -463,7 +467,54 @@ void only_one_booking_wins_the_seat() throws Exception {
 
 ---
 
-### Phase 6 — Resilience and observability (weeks 13–14)
+### Phase 5.5 — Application-level concurrency (week 13)
+
+Placed here deliberately: you now have a baseline and know where the bottleneck is, so you can actually judge whether threading helps. Any earlier and you'd be optimizing blind.
+
+> **Read before starting**: the bottleneck in this system is the **database, not the CPU**. Most application-level parallelization will yield zero improvement or make things worse. That isn't a failure — it's the most honest lesson in concurrency, and it belongs in the thesis with numbers attached, not buried.
+
+**Learn**: Java Memory Model, happens-before, `volatile`, safe publication; `CompletableFuture`, `StructuredTaskScope`; thread pool sizing and rejection policies; CAS and lock-free structures; virtual threads and pinning; JMH, jcstress.
+
+**Build** — each item is a real need, not an excuse to spawn threads:
+
+| # | Item | Technique | What to measure |
+|---|---|---|---|
+| C1 | Assemble order details from 3 schemas (no joins allowed) | `StructuredTaskScope.ShutdownOnFailure` | p95 sequential vs parallel |
+| C2 | Generate 50,000 seats on show creation | Batch vs parallel stream vs JDBC batch vs `COPY` | Time for each approach |
+| C3 | Multi-worker seat-release sweeper | Competing consumers + partitioned `SKIP LOCKED` | Sweep lag at 1/2/4/8 workers |
+| C4 | Outbox publisher | Per-aggregate ordering, single-flight, at-least-once | Publish lag, ordering violations |
+| C5 | Async `notification` | A real `ThreadPoolExecutor`: core/max/**bounded queue**/rejection policy | Queue depth, rejected tasks, latency under overload |
+| C6 | Cache stampede protection | Single-flight via `ConcurrentHashMap.computeIfAbsent` + `CompletableFuture` | Concurrent misses on one key: N → 1 |
+| C7 | In-memory rate limiter | `synchronized` vs `ReentrantLock` vs `AtomicLong` CAS vs `LongAdder` | **JMH microbenchmark** across thread counts |
+| C8 | Waiting room (if built) | `Semaphore` for admission control, fairness | Admissions/sec, fairness |
+| C9 | Propagating `traceId` across async boundaries | `ThreadLocal`/MDC does **not** follow a thread hop | Share of logs missing traceId, before/after |
+
+Do **C1 and C9 first**: C1 solves the exact "no cross-schema joins" problem from §2.6, and C9 is a bug you'll hit whether you plan for it or not.
+
+**Headline experiment — virtual threads vs platform threads**
+
+```yaml
+spring.threads.virtual.enabled: true   # toggle to compare, same binary
+```
+
+| Configuration | Hypothesis |
+|---|---|
+| Platform threads, Tomcat pool 200 | Throughput ceiling tied to thread count |
+| Platform threads, pool 1000 | Worse — context switching, memory |
+| Virtual threads | Handles far more concurrent connections, but **throughput unchanged** because the DB pool is the constraint |
+
+Comes with the **pinning** lesson: a `synchronized` block wrapped around something blocking pins a virtual thread to its carrier and erases the benefit entirely. Enable `-Djdk.tracePinnedThreads=full` to catch it. Deliberately introduce a pinning site and measure it — a vivid, easily-written experiment.
+
+**Measure**:
+- Virtual vs platform thread table (throughput, p95, p99, concurrent connections, memory).
+- JMH for C7: four implementations × {1, 2, 4, 8, 16} threads.
+- Before/after for every C item, **including the ones that don't improve** — record the percentage and explain it with Amdahl (e.g. "parallelizing step X gained 2% because X was 3% of total time").
+
+**Done when**: at least four C items are complete, the virtual-thread table is filled in, and jcstress is green for every hand-written shared structure.
+
+---
+
+### Phase 6 — Resilience and observability (weeks 14–15)
 
 **Learn**: timeouts, retry with backoff, circuit breakers, bulkheads, rate limiting, graceful degradation, RED metrics.
 
@@ -484,7 +535,7 @@ void only_one_booking_wins_the_seat() throws Exception {
 
 ---
 
-### Phase 7 — Freeze the numbers and write (weeks 15–16)
+### Phase 7 — Freeze the numbers and write (weeks 16–17)
 
 **Build**:
 - Re-run the **entire** matrix on a clean environment, on the same day, with the same configuration.
@@ -508,6 +559,8 @@ void only_one_booking_wins_the_seat() throws Exception {
 | Architecture | Modulith `verify()` + ArchUnit | Every build | Blocks boundary violations |
 | Contract | Spring REST Docs / OpenAPI diff | Light | Prepares for semester 2 extraction |
 | Load | k6 | 4 scenarios | Generates the thesis data |
+| Microbenchmark | JMH | 2–3 | Compare implementations at nano/micro scale |
+| JMM races | jcstress | 1–2 | Catch races in hand-written shared structures |
 | Chaos | Toxiproxy / docker kill | 3–4 | Proves resilience |
 
 **Rule**: use Testcontainers, **never H2**. H2's locking semantics differ from Postgres — tests that pass on H2 and break on Postgres are the most common trap here, and it would undermine the exact core of the topic.
@@ -559,6 +612,8 @@ Only tick what you've actually done, not what you assume works.
 - [ ] Expired orders release their seats, even across an app restart
 - [ ] No transaction spans two modules
 - [ ] Concurrency test green 50/50 runs
+- [ ] jcstress green for every hand-written shared structure
+- [ ] `traceId` survives every async boundary
 
 **Engineering**
 - [ ] Migrations run cleanly from an empty database to head
@@ -615,6 +670,11 @@ Only tick what you've actually done, not what you assume works.
 | Resilience patterns | 6 | Circuit breaker experiment |
 | Outbox pattern | 6 | Kafka-ready |
 | Observability, tracing | 6 | Dashboard + traces |
+| Java Memory Model, safe publication | 5.5 | jcstress tests |
+| Thread pool sizing, backpressure | 5.5 | Rejection-policy experiment |
+| Lock-free, CAS, `LongAdder` | 5.5 | JMH benchmark C7 |
+| Structured concurrency (Java 21) | 5.5 | C1 — parallel data assembly |
+| Virtual threads & pinning | 5.5 | Virtual vs platform table |
 | Load-testing methodology | 3, 7 | Standardized procedure |
 
 ---
@@ -631,6 +691,8 @@ Only tick what you've actually done, not what you assume works.
 
 - *Designing Data-Intensive Applications* — Kleppmann (ch. 7 Transactions, ch. 9 Consistency)
 - *Database Internals* — Petrov (locking & concurrency control)
+- *Java Concurrency in Practice* — Goetz (still the reference, despite predating Java 8)
+- JEP 444 (Virtual Threads) and JEP 453 (Structured Concurrency) — read them directly; short and clear
 - PostgreSQL docs: Explicit Locking, Transaction Isolation, Partitioning
 - Spring Modulith reference documentation
 - Use The Index, Luke (`use-the-index-luke.com`) — index strategy
