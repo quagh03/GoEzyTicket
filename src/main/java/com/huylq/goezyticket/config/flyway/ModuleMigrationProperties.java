@@ -1,9 +1,8 @@
 package com.huylq.goezyticket.config.flyway;
 
+import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
-
-import java.util.List;
 
 @ConfigurationProperties(prefix = "goezyticket.migration")
 public record ModuleMigrationProperties(
