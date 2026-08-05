@@ -10,7 +10,8 @@ import org.springframework.context.annotation.Configuration;
 public class MigrationConfiguration {
 
   @Bean
-  public FlywayMigrationStrategy modularFlywayMigrationStrategy(ModuleMigrationProperties properties) {
+  public FlywayMigrationStrategy modularFlywayMigrationStrategy(
+      ModuleMigrationProperties properties) {
     return new ModularFlywayMigrationStrategy(properties);
   }
 

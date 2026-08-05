@@ -1,12 +1,11 @@
 package com.huylq.goezyticket.config.flyway;
 
+import javax.sql.DataSource;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.output.MigrateResult;
 import org.springframework.boot.flyway.autoconfigure.FlywayMigrationStrategy;
-
-import javax.sql.DataSource;
 
 @Slf4j
 @RequiredArgsConstructor
@@ -16,7 +15,7 @@ public class ModularFlywayMigrationStrategy implements FlywayMigrationStrategy {
 
   @Override
   public void migrate(Flyway autoConfigured) {
-    long startedAt = System.nanoTime();
+    final long startedAt = System.nanoTime();
     log.info("Started flyway migration");
 
     if (properties.modules().isEmpty()) {
@@ -36,7 +35,7 @@ public class ModularFlywayMigrationStrategy implements FlywayMigrationStrategy {
         properties.modules()
     );
 
-    for(String module : properties.modules()) {
+    for (String module : properties.modules()) {
       migrateInto(dataSource, module, module);
     }
 
